@@ -1,0 +1,63 @@
+# Default ignored files
+/shelf/
+/workspace.xml
+# Editor-based HTTP Client requests
+/httpRequests/
+# Datasource local storage ignored files
+/dataSources/
+/dataSources.local.xml
+
+/target
+.idea
+
+# Binary files
+*.exe
+*.dll
+*.so
+*.dylib
+*.bin
+
+# Object files
+*.o
+*.obj
+
+# Compiled output
+bin/
+
+# Generated files
+/target/
+debug/
+release/
+
+# RustRover IDE
+.idea/
+*.iml
+.fleet/
+
+# Rust-specific
+**/*.rs.bk
+Cargo.lock
+!Cargo.lock
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+
+# Build artifacts
+*.pdb
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Environment
+.env
+.env.local
+
+# Backup files
+*.bak
+*.swp
+*.swo
