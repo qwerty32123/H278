@@ -1,13 +1,13 @@
 package service
 
 import (
+	"H278/Memory/Windows" // Add this import for your shared memory package
 	"H278/network"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"math/rand"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -19,7 +19,8 @@ type ResponseLogger struct {
 	stopChan  chan struct{}
 	waitGroup sync.WaitGroup
 	logMutex  sync.Mutex
-	responses map[string][]byte // Store responses with timestamp as key
+	responses map[string][]byte
+	sharedMem *Windows.SharedMemoryClient
 }
 
 type ResponseData struct {
@@ -30,12 +31,19 @@ type ResponseData struct {
 	ResponseSize int
 }
 
-func NewResponseLogger(targetURL string) (*ResponseLogger, error) {
+func NewResponseLogger(targetURL string, sharedMemName string, sharedMemSize int) (*ResponseLogger, error) {
+	// Initialize shared memory
+	sharedMem, err := Windows.NewSharedMemoryClient(sharedMemName, sharedMemSize)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create shared memory client: %v", err)
+	}
+
 	logger := &ResponseLogger{
 		clients:   make([]*network.MultiTorClient, 4),
 		targetURL: targetURL,
 		stopChan:  make(chan struct{}),
 		responses: make(map[string][]byte),
+		sharedMem: sharedMem,
 	}
 
 	for i := 0; i < 4; i++ {
@@ -55,19 +63,6 @@ func (l *ResponseLogger) logRequest(clientID int, subCategory int, publicIP stri
 	l.logMutex.Lock()
 	defer l.logMutex.Unlock()
 
-	// Create data directory if it doesn't exist
-	if err := os.MkdirAll("data", 0755); err != nil {
-		log.Printf("Error creating data directory: %v", err)
-		return
-	}
-
-	timestamp := time.Now().Format("20060102150405.000")
-	filename := fmt.Sprintf("data/response_%d_%s.bin", clientID, timestamp)
-
-	// Save only response data to file
-	if err := os.WriteFile(filename, responseData, 0644); err != nil {
-		log.Printf("Error saving response to file: %v", err)
-	}
 	data := ResponseData{
 		ClientID:     clientID,
 		RequestTime:  time.Now(),
@@ -76,20 +71,45 @@ func (l *ResponseLogger) logRequest(clientID int, subCategory int, publicIP stri
 		ResponseSize: len(responseData),
 	}
 
-	// Store binary response
-	l.responses[filename] = responseData
+	// Convert metadata to JSON
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		log.Printf("Error marshaling response data: %v", err)
+		return
+	}
 
-	// Save to file
+	if err := l.sharedMem.WriteData(responseData); err != nil {
+		log.Printf("Error writing to shared memory: %v", err)
+		return
+	}
 
-	jsonData, _ := json.MarshalIndent(data, "", "  ")
 	log.Printf("Request sent:\n%s\n", string(jsonData))
 }
+
+func (l *ResponseLogger) Stop() {
+	close(l.stopChan)
+	for _, client := range l.clients {
+		if client != nil {
+			client.Stop()
+		}
+	}
+	if l.sharedMem != nil {
+		l.sharedMem.Close()
+	}
+	l.waitGroup.Wait()
+}
+
 func (l *ResponseLogger) getPublicIP(client *network.MultiTorClient) string {
 	resp, err := client.Circuits[0].Client.Get("https://api.ipify.org")
 	if err != nil {
 		return "unknown"
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+
+		}
+	}(resp.Body)
 
 	ip, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -155,20 +175,9 @@ func (l *ResponseLogger) runClientWithLogging(index int) {
 		}
 	}
 }
-
 func (l *ResponseLogger) Start() {
 	for i := range l.clients {
 		l.waitGroup.Add(1)
 		go l.runClientWithLogging(i)
 	}
-}
-
-func (l *ResponseLogger) Stop() {
-	close(l.stopChan)
-	for _, client := range l.clients {
-		if client != nil {
-			client.Stop()
-		}
-	}
-	l.waitGroup.Wait()
 }

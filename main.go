@@ -2,36 +2,28 @@ package main
 
 import (
 	"H278/service"
-	"fmt"
 	"log"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 )
-
-func bytesToHexString(bytes []byte) string {
-	hexStr := strings.Builder{}
-	for i, b := range bytes {
-		if i > 0 {
-			hexStr.WriteString(" ")
-		}
-		hexStr.WriteString(fmt.Sprintf("%02X", b))
-	}
-	return hexStr.String()
-}
 
 func main() {
 	// Set up logging
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
 	// Create new logger
-	logger, err := service.NewResponseLogger("https://eu-trade.naeu.playblackdesert.com/Trademarket/GetWorldMarketList")
+	logger, err := service.NewResponseLogger(
+		"xx://xx-xx.xx.xxx.com/xxx/xx",
+		"h278",    // Shared memory name
+		1024*1024, // 1MB shared memory size
+	)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Failed to create logger: %v", err)
 	}
+	defer logger.Stop()
 
-	// Start the logger
+	// Use as before
 	logger.Start()
 
 	// Set up graceful shutdown

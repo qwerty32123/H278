@@ -3,15 +3,14 @@ package network
 import (
 	"context"
 	"fmt"
+	"github.com/cretz/bine/tor"
+	"golang.org/x/net/proxy"
 	"io"
 	"log"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/cretz/bine/tor"
-	"golang.org/x/net/proxy"
 )
 
 type TorCircuit struct {
@@ -73,7 +72,10 @@ func NewMultiTorClient(circuitCount int) (*MultiTorClient, error) {
 			// Clean up any initialized circuits
 			for _, circuit := range client.Circuits {
 				if circuit != nil && circuit.torInstance != nil {
-					circuit.torInstance.Close()
+					err := circuit.torInstance.Close()
+					if err != nil {
+						return nil, err
+					}
 				}
 			}
 			return nil, err
