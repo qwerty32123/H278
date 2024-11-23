@@ -1,8 +1,8 @@
 package Memory
 
 type SharedMemoryInterface interface {
-	WriteData(data []byte) error
-	Close()
+	WriteData(clientID uint32, data []byte) error
+	Close() error
 }
 
 func NewSharedMemory(name string, size int) (SharedMemoryInterface, error) {

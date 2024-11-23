@@ -1,5 +1,3 @@
-//go:build windows
-
 package Windows
 
 import (
@@ -20,25 +18,18 @@ type SharedMemoryClient struct {
 	eventHandle windows.Handle
 }
 
-type WindowsSharedMemory struct {
-	handle      windows.Handle
-	view        uintptr
-	size        int
-	eventHandle windows.Handle
-}
-
 func OpenEvent(desiredAccess uint32, inheritHandle bool, name *uint16) (windows.Handle, error) {
 	modkernel32 := windows.NewLazyDLL("kernel32.dll")
 	procOpenEvent := modkernel32.NewProc("OpenEventW")
 
-	handle, _, err := procOpenEvent.Call(
+	handle, _, errCode := procOpenEvent.Call(
 		uintptr(desiredAccess),
 		uintptr(boolToInt(inheritHandle)),
 		uintptr(unsafe.Pointer(name)),
 	)
 
 	if handle == 0 {
-		return 0, err
+		return 0, fmt.Errorf("OpenEvent failed with error code: %v", errCode)
 	}
 	return windows.Handle(handle), nil
 }
@@ -47,14 +38,14 @@ func OpenFileMapping(desiredAccess uint32, inheritHandle bool, name *uint16) (wi
 	modkernel32 := windows.NewLazyDLL("kernel32.dll")
 	procOpenFileMapping := modkernel32.NewProc("OpenFileMappingW")
 
-	handle, _, err := procOpenFileMapping.Call(
+	handle, _, errCode := procOpenFileMapping.Call(
 		uintptr(desiredAccess),
 		uintptr(boolToInt(inheritHandle)),
 		uintptr(unsafe.Pointer(name)),
 	)
 
 	if handle == 0 {
-		return 0, err
+		return 0, fmt.Errorf("OpenFileMapping failed with error code: %v", errCode)
 	}
 	return windows.Handle(handle), nil
 }
@@ -65,27 +56,39 @@ func boolToInt(b bool) int {
 	}
 	return 0
 }
-func NewWindowsSharedMemory(name string, size int) (*WindowsSharedMemory, error) {
+
+func NewWindowsSharedMemory(name string, size int) (*SharedMemoryClient, error) {
+	// Open the file mapping
 	handle, err := OpenFileMapping(FILE_MAP_ALL_ACCESS, false, windows.StringToUTF16Ptr(name))
 	if err != nil {
-		return nil, fmt.Errorf("OpenFileMapping error: %v", err)
+		return nil, fmt.Errorf("OpenFileMapping error: %w", err)
 	}
 
+	// If mapping fails, ensure we clean up the handle
 	view, err := windows.MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, uintptr(size))
 	if err != nil {
-		windows.CloseHandle(handle)
+		closeErr := windows.CloseHandle(handle)
+		if closeErr != nil {
+			return nil, fmt.Errorf("MapViewOfFile error: %v, additional CloseHandle error: %v", err, closeErr)
+		}
 		return nil, fmt.Errorf("MapViewOfFile error: %v", err)
 	}
 
+	// Open the event with proper error handling
 	eventName := name + "_event"
 	eventHandle, err := OpenEvent(windows.EVENT_MODIFY_STATE, false, windows.StringToUTF16Ptr(eventName))
 	if err != nil {
-		windows.UnmapViewOfFile(view)
-		windows.CloseHandle(handle)
+		// Clean up resources in case of error
+		unmapErr := windows.UnmapViewOfFile(view)
+		closeErr := windows.CloseHandle(handle)
+		if unmapErr != nil || closeErr != nil {
+			return nil, fmt.Errorf("OpenEvent error: %v, additional cleanup errors: unmap=%v, close=%v",
+				err, unmapErr, closeErr)
+		}
 		return nil, fmt.Errorf("OpenEvent error: %v", err)
 	}
 
-	return &WindowsSharedMemory{
+	return &SharedMemoryClient{
 		handle:      handle,
 		view:        view,
 		size:        size,
@@ -93,27 +96,64 @@ func NewWindowsSharedMemory(name string, size int) (*WindowsSharedMemory, error)
 	}, nil
 }
 
-func (w *WindowsSharedMemory) WriteData(data []byte) error {
-	totalSize := 4 + len(data)
-	if totalSize > w.size {
-		return fmt.Errorf("data size exceeds shared memory size")
+func (c *SharedMemoryClient) WriteData(clientID uint32, data []byte) error {
+	// Total size includes: 4 bytes for total size + 4 bytes for client ID + data length
+	dataSize := 4 + len(data) // client ID size + actual data
+	totalSize := 4 + dataSize // total size prefix + data size
+
+	if totalSize > c.size {
+		return fmt.Errorf("data size (%d) exceeds shared memory size (%d)", totalSize, c.size)
 	}
 
-	dest := unsafe.Slice((*byte)(unsafe.Pointer(w.view)), totalSize)
-	binary.LittleEndian.PutUint32(dest[:4], uint32(len(data)))
-	copy(dest[4:], data)
+	// Create a safe slice with bounds checking
+	header := struct {
+		Data uintptr
+		Len  int
+		Cap  int
+	}{c.view, totalSize, totalSize}
+	dest := *(*[]byte)(unsafe.Pointer(&header))
 
-	return windows.SetEvent(w.eventHandle)
+	// Write total size (excluding the size field itself)
+	binary.LittleEndian.PutUint32(dest[0:4], uint32(dataSize))
+
+	// Write client ID
+	binary.LittleEndian.PutUint32(dest[4:8], clientID)
+
+	// Write actual data
+	copy(dest[8:], data)
+
+	if err := windows.SetEvent(c.eventHandle); err != nil {
+		return fmt.Errorf("SetEvent failed: %w", err)
+	}
+	return nil
 }
 
-func (w *WindowsSharedMemory) Close() {
-	if w.view != 0 {
-		windows.UnmapViewOfFile(w.view)
+func (c *SharedMemoryClient) Close() error {
+	var errors []error
+
+	if c.view != 0 {
+		if err := windows.UnmapViewOfFile(c.view); err != nil {
+			errors = append(errors, fmt.Errorf("UnmapViewOfFile failed: %w", err))
+		}
+		c.view = 0
 	}
-	if w.handle != 0 {
-		windows.CloseHandle(w.handle)
+
+	if c.handle != 0 {
+		if err := windows.CloseHandle(c.handle); err != nil {
+			errors = append(errors, fmt.Errorf("CloseHandle for mapping failed: %w", err))
+		}
+		c.handle = 0
 	}
-	if w.eventHandle != 0 {
-		windows.CloseHandle(w.eventHandle)
+
+	if c.eventHandle != 0 {
+		if err := windows.CloseHandle(c.eventHandle); err != nil {
+			errors = append(errors, fmt.Errorf("CloseHandle for event failed: %w", err))
+		}
+		c.eventHandle = 0
 	}
+
+	if len(errors) > 0 {
+		return fmt.Errorf("multiple errors during Close: %v", errors)
+	}
+	return nil
 }

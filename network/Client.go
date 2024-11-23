@@ -89,12 +89,10 @@ func NewMultiTorClient(circuitCount int) (*MultiTorClient, error) {
 	return client, nil
 }
 func initCircuit(id int) (*TorCircuit, error) {
-	// Find available ports
-	basePort := 9050 + (id * 10) // More spacing between ports
+	basePort := 3070 + (id * 10)
 	var dnsPort, socksPort int
 
-	// Find first available pair of ports
-	for i := 0; i < 100; i++ { // Try up to 100 port combinations
+	for i := 0; i < 100; i++ {
 		testSocksPort := basePort + i
 		testDnsPort := basePort + i + 1
 
@@ -109,59 +107,65 @@ func initCircuit(id int) (*TorCircuit, error) {
 		return nil, fmt.Errorf("could not find available ports for circuit %d", id)
 	}
 
-	// Create data directory for this circuit
 	dataDir, err := os.MkdirTemp("", fmt.Sprintf("tor-circuit-%d-", id))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create data directory: %v", err)
 	}
 
-	// Start tor with improved configuration
+	logFile, err := os.CreateTemp("", fmt.Sprintf("tor-circuit-%d-*.log", id))
+	if err != nil {
+		if cleanErr := os.RemoveAll(dataDir); cleanErr != nil {
+			return nil, fmt.Errorf("failed to create log file: %v and cleanup error: %v", err, cleanErr)
+		}
+		return nil, fmt.Errorf("failed to create log file: %v", err)
+	}
+
 	conf := &tor.StartConf{
 		ProcessCreator: nil,
-		DebugWriter:    nil,
+		DebugWriter:    logFile,
 		NoHush:         false,
-		DataDir:        dataDir, // Separate data directory for each instance
+		DataDir:        dataDir,
 		ExtraArgs: []string{
 			"--DNSPort", fmt.Sprintf("%d", dnsPort),
 			"--SocksPort", fmt.Sprintf("%d", socksPort),
 			"--AutomapHostsOnResolve", "1",
 			"--AutomapHostsSuffixes", ".exit,.onion",
-			"--GeoIPFile", filepath.Join(dataDir, "geoip"), // Set explicit paths
+			"--GeoIPFile", filepath.Join(dataDir, "geoip"),
 			"--GeoIPv6File", filepath.Join(dataDir, "geoip6"),
-			"--DataDirectory", dataDir, // Explicit data directory
-			"--PidFile", filepath.Join(dataDir, "pid"), // Separate PID file
-			"--CircuitBuildTimeout", "30", // Faster circuit building
-			"--LearnCircuitBuildTimeout", "0", // Disable automatic timing learning
+			"--DataDirectory", dataDir,
+			"--PidFile", filepath.Join(dataDir, "pid"),
+			"--CircuitBuildTimeout", "30",
+			"--LearnCircuitBuildTimeout", "0",
 		},
 	}
 
-	// Create logger for this circuit
-	logFile, err := os.CreateTemp("", fmt.Sprintf("tor-circuit-%d-*.log", id))
-	if err != nil {
-		os.RemoveAll(dataDir)
-		return nil, fmt.Errorf("failed to create log file: %v", err)
-	}
-	conf.DebugWriter = logFile
-
 	t, err := tor.Start(nil, conf)
 	if err != nil {
-		os.RemoveAll(dataDir)
-		logFile.Close()
+		if cleanErr := os.RemoveAll(dataDir); cleanErr != nil {
+			log.Printf("Warning: failed to clean up data directory: %v", cleanErr)
+		}
+		if closeErr := logFile.Close(); closeErr != nil {
+			log.Printf("Warning: failed to close log file: %v", closeErr)
+		}
 		return nil, fmt.Errorf("failed to start tor: %v", err)
 	}
 
-	// Wait for the tor instance to be fully ready
-	time.Sleep(time.Second * 5) // Give Tor time to initialize
+	time.Sleep(time.Second * 5)
 
 	dialCtx, dialCancel := context.WithTimeout(context.Background(), time.Minute)
 	defer dialCancel()
 
-	// Create SOCKS5 dialer
 	dialer, err := t.Dialer(dialCtx, nil)
 	if err != nil {
-		os.RemoveAll(dataDir)
-		logFile.Close()
-		t.Close()
+		if cleanErr := os.RemoveAll(dataDir); cleanErr != nil {
+			log.Printf("Warning: failed to clean up data directory: %v", cleanErr)
+		}
+		if closeErr := logFile.Close(); closeErr != nil {
+			log.Printf("Warning: failed to close log file: %v", closeErr)
+		}
+		if closeErr := t.Close(); closeErr != nil {
+			log.Printf("Warning: failed to close tor instance: %v", closeErr)
+		}
 		return nil, fmt.Errorf("failed to create dialer: %v", err)
 	}
 
@@ -185,11 +189,9 @@ func initCircuit(id int) (*TorCircuit, error) {
 		Client:      httpClient,
 	}
 
-	// Add retry logic with longer initial wait
-	maxRetries := 5 // Increased retries
+	maxRetries := 5
 	var lastErr error
 	for i := 0; i < maxRetries; i++ {
-		// Exponential backoff
 		backoff := time.Second * time.Duration(math.Pow(2, float64(i)))
 		time.Sleep(backoff)
 
@@ -204,45 +206,65 @@ func initCircuit(id int) (*TorCircuit, error) {
 	}
 
 	if lastErr != nil {
-		os.RemoveAll(dataDir)
-		logFile.Close()
-		t.Close()
+		if cleanErr := os.RemoveAll(dataDir); cleanErr != nil {
+			log.Printf("Warning: failed to clean up data directory: %v", cleanErr)
+		}
+		if closeErr := logFile.Close(); closeErr != nil {
+			log.Printf("Warning: failed to close log file: %v", closeErr)
+		}
+		if closeErr := t.Close(); closeErr != nil {
+			log.Printf("Warning: failed to close tor instance: %v", closeErr)
+		}
 		return nil, fmt.Errorf("failed to verify tor connection after %d attempts: %v", maxRetries, lastErr)
 	}
 
-	// Get initial IP with retry
 	maxIPRetries := 3
+	var ipErr error
 	for i := 0; i < maxIPRetries; i++ {
 		if err := circuit.getCurrentIP(); err != nil {
+			ipErr = err
 			log.Printf("Circuit %d: IP fetch attempt %d failed: %v", id, i+1, err)
 			time.Sleep(time.Second * 2)
 			continue
 		}
 		log.Printf("Circuit %d: Successfully obtained IP: %s", id, circuit.GetCurrentIP())
+		ipErr = nil
 		break
+	}
+
+	if ipErr != nil {
+		log.Printf("Warning: failed to get initial IP for circuit %d: %v", id, ipErr)
 	}
 
 	return circuit, nil
 }
 
-// Helper function to check port availability
 func isPortAvailable(port int) bool {
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return false
 	}
-	ln.Close()
+
+	// Close the listener and log any errors
+	if err := ln.Close(); err != nil {
+		log.Printf("Warning: error closing listener on port %d: %v", port, err)
+		return false // Consider port as unavailable if we can't properly close the listener
+	}
+
 	return true
 }
 
-// Add cleanup method to TorCircuit
 func (c *TorCircuit) Cleanup() {
 	if c.torInstance != nil {
 		dataDir := c.torInstance.DataDir
-		c.Close()
+		if err := c.Close(); err != nil {
+			log.Printf("Warning: failed to close circuit: %v", err)
+		}
 		if dataDir != "" {
-			os.RemoveAll(dataDir)
+			if err := os.RemoveAll(dataDir); err != nil {
+				log.Printf("Warning: failed to remove data directory: %v", err)
+			}
 		}
 	}
 }
@@ -253,7 +275,12 @@ func (c *TorCircuit) verifyTorConnection() error {
 	if err != nil {
 		return fmt.Errorf("failed to check tor connection: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+
+		}
+	}(resp.Body)
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -273,7 +300,12 @@ func (c *TorCircuit) getCurrentIP() error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+
+		}
+	}(resp.Body)
 
 	ip, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -361,21 +393,25 @@ func (c *TorCircuit) Close() error {
 		return nil
 	}
 
-	// Cancel any pending requests
+	var errs []error
+
 	if c.Client != nil && c.Client.Transport != nil {
 		if transport, ok := c.Client.Transport.(*http.Transport); ok {
 			transport.CloseIdleConnections()
 		}
 	}
 
-	// Close Tor instance
 	if c.torInstance != nil {
 		if err := c.torInstance.Close(); err != nil {
-			return fmt.Errorf("failed to close tor instance: %v", err)
+			errs = append(errs, fmt.Errorf("failed to close tor instance: %v", err))
 		}
 	}
 
 	c.closed = true
+
+	if len(errs) > 0 {
+		return fmt.Errorf("multiple errors during close: %v", errs)
+	}
 	return nil
 }
 
@@ -402,7 +438,12 @@ func (c *TorCircuit) MakeRequest(req Request) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+
+		}
+	}(resp.Body)
 
 	// Read response
 	_, err = io.ReadAll(resp.Body)

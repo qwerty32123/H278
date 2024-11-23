@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"golang.org/x/sys/unix"
 	"os"
+	"path/filepath"
 )
 
 type UnixSharedMemory struct {
@@ -21,22 +22,26 @@ func NewUnixSharedMemory(name string, size int) (*UnixSharedMemory, error) {
 		name = "/" + name
 	}
 
-	// Use OpenFile with O_TMPFILE for shared memory
-	fd, err := unix.Open("/dev/shm", unix.O_RDWR|unix.O_CREAT, 0666)
+	// Create full path in /dev/shm
+	fullPath := filepath.Join("/dev/shm", name)
+
+	// Open or create the shared memory file
+	fd, err := unix.Open(fullPath, unix.O_RDWR|unix.O_CREAT, 0666)
 	if err != nil {
-		return nil, fmt.Errorf("open error: %v", err)
+		return nil, fmt.Errorf("open error at %s: %v", fullPath, err)
 	}
 
+	// Set the size
 	if err := unix.Ftruncate(fd, int64(size)); err != nil {
 		unix.Close(fd)
-		os.Remove("/dev/shm" + name)
+		os.Remove(fullPath)
 		return nil, fmt.Errorf("ftruncate error: %v", err)
 	}
 
 	data, err := unix.Mmap(fd, 0, size, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
 	if err != nil {
 		unix.Close(fd)
-		os.Remove("/dev/shm" + name)
+		os.Remove(fullPath)
 		return nil, fmt.Errorf("mmap error: %v", err)
 	}
 
@@ -48,7 +53,7 @@ func NewUnixSharedMemory(name string, size int) (*UnixSharedMemory, error) {
 	}, nil
 }
 
-func (u *UnixSharedMemory) WriteData(data []byte) error {
+func (c *UnixSharedMemory) WriteData(clientID uint32, data []byte) error {
 	if len(data)+4 > u.size {
 		return fmt.Errorf("data size exceeds shared memory size")
 	}
@@ -94,7 +99,7 @@ func (u *UnixSharedMemory) Close() {
 		u.fd = 0
 	}
 	if u.name != "" {
-		os.Remove("/dev/shm" + u.name)
+		os.Remove(filepath.Join("/dev/shm", u.name))
 		u.name = ""
 	}
 }

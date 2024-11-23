@@ -78,7 +78,7 @@ func (l *ResponseLogger) logRequest(clientID int, subCategory int, publicIP stri
 		return
 	}
 
-	if err := l.sharedMem.WriteData(responseData); err != nil {
+	if err := l.sharedMem.WriteData(uint32(clientID), responseData); err != nil {
 		log.Printf("Error writing to shared memory: %v", err)
 		return
 	}
@@ -94,7 +94,10 @@ func (l *ResponseLogger) Stop() {
 		}
 	}
 	if l.sharedMem != nil {
-		l.sharedMem.Close()
+		err := l.sharedMem.Close()
+		if err != nil {
+			return
+		}
 	}
 	l.waitGroup.Wait()
 }
@@ -137,48 +140,60 @@ func (l *ResponseLogger) runClientWithLogging(index int) {
 		case <-l.stopChan:
 			return
 		default:
-			delay := time.Duration(600+r.Intn(201)) * time.Millisecond
-
-			subCategory := index + 1
-			jsonBody := fmt.Sprintf(`{
-                "keyType": 0,
-                "mainCategory": 55,
-                "subCategory": %d
-            }`, subCategory)
-
-			req := network.Request{
-				URL:    l.targetURL,
-				Method: "POST",
-				Body:   jsonBody,
-				Headers: map[string]string{
-					"Connection":   "keep-alive",
-					"User-Agent":   "BlackDesert",
-					"Content-Type": "application/json",
-				},
-			}
-
-			// Get public IP before making request
-			publicIP := l.getPublicIP(client)
-
-			// Make the request
-			resp, err := client.Circuits[0].Client.Post(req.URL, req.Headers["Content-Type"], strings.NewReader(req.Body))
-			if err != nil {
-				log.Printf("Client %d error: %v", index, err)
-				time.Sleep(delay)
-				continue
-			}
-
-			// Read response body
-			responseData, err := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			if err != nil {
-				log.Printf("Client %d error reading response: %v", index, err)
-				time.Sleep(delay)
-				continue
-			}
-
-			l.logRequest(index, subCategory, publicIP, responseData)
-			time.Sleep(delay)
+			l.handleSingleRequest(index, client, r)
 		}
 	}
+}
+
+func (l *ResponseLogger) handleSingleRequest(index int, client *network.MultiTorClient, r *rand.Rand) {
+	delay := time.Duration(1500+r.Intn(301)) * time.Millisecond
+	defer time.Sleep(delay) // Ensure delay happens regardless of early returns
+
+	subCategory := index + 1
+	jsonBody := fmt.Sprintf(`{
+        "keyType": 0,
+        "mainCategory": 55,
+        "subCategory": %d
+    }`, subCategory)
+
+	req := network.Request{
+		URL:    l.targetURL,
+		Method: "POST",
+		Body:   jsonBody,
+		Headers: map[string]string{
+			"Connection":   "keep-alive",
+			"User-Agent":   "BlackDesert",
+			"Content-Type": "application/json",
+		},
+	}
+
+	// Get public IP before making request
+	publicIP := l.getPublicIP(client)
+
+	// Make the request
+	resp, err := client.Circuits[0].Client.Post(req.URL, req.Headers["Content-Type"], strings.NewReader(req.Body))
+	if err != nil {
+		log.Printf("Client %d error making request: %v", index, err)
+		return
+	}
+	if resp == nil || resp.Body == nil {
+		log.Printf("Client %d received nil response or body", index)
+		return
+	}
+
+	// Ensure response body is closed
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			log.Printf("Client %d error closing response body: %v", index, closeErr)
+		}
+	}()
+
+	// Read response body
+	responseData, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("Client %d error reading response: %v", index, err)
+		return
+	}
+
+	l.logRequest(index, subCategory, publicIP, responseData)
 }
