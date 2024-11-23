@@ -59,9 +59,24 @@ func NewResponseLogger(targetURL string, sharedMemName string, sharedMemSize int
 	return logger, nil
 }
 
+// In service/ResponseLogger.go, modify the logRequest method:
 func (l *ResponseLogger) logRequest(clientID int, subCategory int, publicIP string, responseData []byte) {
 	l.logMutex.Lock()
 	defer l.logMutex.Unlock()
+
+	// Check response size
+	if len(responseData) < 3900 {
+		// Rotate IP for this client
+		if err := l.clients[clientID].Circuits[0].RotateIP(); err != nil {
+			log.Printf("Error rotating IP for client %d: %v", clientID, err)
+		}
+		return
+	}
+
+	if err := l.sharedMem.WriteData(uint32(clientID), responseData); err != nil {
+		log.Printf("Error writing to shared memory: %v", err)
+		return
+	}
 
 	data := ResponseData{
 		ClientID:     clientID,
@@ -71,15 +86,9 @@ func (l *ResponseLogger) logRequest(clientID int, subCategory int, publicIP stri
 		ResponseSize: len(responseData),
 	}
 
-	// Convert metadata to JSON
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		log.Printf("Error marshaling response data: %v", err)
-		return
-	}
-
-	if err := l.sharedMem.WriteData(uint32(clientID), responseData); err != nil {
-		log.Printf("Error writing to shared memory: %v", err)
 		return
 	}
 
