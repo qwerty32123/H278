@@ -1,7 +1,7 @@
 package service
 
 import (
-	"H278/Memory/Windows" // Add this import for your shared memory package
+	"H278/Memory"
 	"H278/network"
 	"encoding/json"
 	"fmt"
@@ -20,7 +20,7 @@ type ResponseLogger struct {
 	waitGroup sync.WaitGroup
 	logMutex  sync.Mutex
 	responses map[string][]byte
-	sharedMem *Windows.SharedMemoryClient
+	sharedMem Memory.SharedMemoryInterface
 }
 
 type ResponseData struct {
@@ -32,10 +32,10 @@ type ResponseData struct {
 }
 
 func NewResponseLogger(targetURL string, sharedMemName string, sharedMemSize int) (*ResponseLogger, error) {
-	// Initialize shared memory
-	sharedMem, err := Windows.NewSharedMemoryClient(sharedMemName, sharedMemSize)
+	// Initialize shared memory using the interface
+	sharedMem, err := Memory.NewSharedMemory(sharedMemName, sharedMemSize)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create shared memory client: %v", err)
+		return nil, fmt.Errorf("failed to create shared memory: %v", err)
 	}
 
 	logger := &ResponseLogger{

@@ -1,3 +1,5 @@
+//go:build windows
+
 package Windows
 
 import (
@@ -12,6 +14,13 @@ const (
 )
 
 type SharedMemoryClient struct {
+	handle      windows.Handle
+	view        uintptr
+	size        int
+	eventHandle windows.Handle
+}
+
+type WindowsSharedMemory struct {
 	handle      windows.Handle
 	view        uintptr
 	size        int
@@ -56,8 +65,7 @@ func boolToInt(b bool) int {
 	}
 	return 0
 }
-
-func NewSharedMemoryClient(name string, size int) (*SharedMemoryClient, error) {
+func NewWindowsSharedMemory(name string, size int) (*WindowsSharedMemory, error) {
 	handle, err := OpenFileMapping(FILE_MAP_ALL_ACCESS, false, windows.StringToUTF16Ptr(name))
 	if err != nil {
 		return nil, fmt.Errorf("OpenFileMapping error: %v", err)
@@ -65,10 +73,7 @@ func NewSharedMemoryClient(name string, size int) (*SharedMemoryClient, error) {
 
 	view, err := windows.MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, uintptr(size))
 	if err != nil {
-		err := windows.CloseHandle(handle)
-		if err != nil {
-			return nil, err
-		}
+		windows.CloseHandle(handle)
 		return nil, fmt.Errorf("MapViewOfFile error: %v", err)
 	}
 
@@ -80,7 +85,7 @@ func NewSharedMemoryClient(name string, size int) (*SharedMemoryClient, error) {
 		return nil, fmt.Errorf("OpenEvent error: %v", err)
 	}
 
-	return &SharedMemoryClient{
+	return &WindowsSharedMemory{
 		handle:      handle,
 		view:        view,
 		size:        size,
@@ -88,40 +93,27 @@ func NewSharedMemoryClient(name string, size int) (*SharedMemoryClient, error) {
 	}, nil
 }
 
-func (c *SharedMemoryClient) WriteData(data []byte) error {
-	totalSize := 4 + len(data) // 4 bytes for length prefix
-	if totalSize > c.size {
+func (w *WindowsSharedMemory) WriteData(data []byte) error {
+	totalSize := 4 + len(data)
+	if totalSize > w.size {
 		return fmt.Errorf("data size exceeds shared memory size")
 	}
 
-	dest := unsafe.Slice((*byte)(unsafe.Pointer(c.view)), totalSize)
+	dest := unsafe.Slice((*byte)(unsafe.Pointer(w.view)), totalSize)
 	binary.LittleEndian.PutUint32(dest[:4], uint32(len(data)))
 	copy(dest[4:], data)
 
-	err := windows.SetEvent(c.eventHandle)
-	if err != nil {
-		return err
-	}
-	return nil
+	return windows.SetEvent(w.eventHandle)
 }
 
-func (c *SharedMemoryClient) Close() {
-	if c.view != 0 {
-		err := windows.UnmapViewOfFile(c.view)
-		if err != nil {
-			return
-		}
+func (w *WindowsSharedMemory) Close() {
+	if w.view != 0 {
+		windows.UnmapViewOfFile(w.view)
 	}
-	if c.handle != 0 {
-		err := windows.CloseHandle(c.handle)
-		if err != nil {
-			return
-		}
+	if w.handle != 0 {
+		windows.CloseHandle(w.handle)
 	}
-	if c.eventHandle != 0 {
-		err := windows.CloseHandle(c.eventHandle)
-		if err != nil {
-			return
-		}
+	if w.eventHandle != 0 {
+		windows.CloseHandle(w.eventHandle)
 	}
 }
