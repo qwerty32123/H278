@@ -99,6 +99,13 @@ func (l *ResponseLogger) Stop() {
 	l.waitGroup.Wait()
 }
 
+func (l *ResponseLogger) Start() {
+	for i := range l.clients {
+		l.waitGroup.Add(1)
+		go l.runClientWithLogging(i)
+	}
+}
+
 func (l *ResponseLogger) getPublicIP(client *network.MultiTorClient) string {
 	resp, err := client.Circuits[0].Client.Get("https://api.ipify.org")
 	if err != nil {
@@ -173,11 +180,5 @@ func (l *ResponseLogger) runClientWithLogging(index int) {
 			l.logRequest(index, subCategory, publicIP, responseData)
 			time.Sleep(delay)
 		}
-	}
-}
-func (l *ResponseLogger) Start() {
-	for i := range l.clients {
-		l.waitGroup.Add(1)
-		go l.runClientWithLogging(i)
 	}
 }

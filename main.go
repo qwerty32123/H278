@@ -10,11 +10,15 @@ import (
 
 func main() {
 	// Set up logging
+	//if err := network.ConfigureFirewall(); err != nil {
+	//	log.Fatalf("Failed to configure firewall: %v", err)
+	//}
+
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
 	// Create new logger
 	logger, err := service.NewResponseLogger(
-		"xx://xx-xx.xx.xxx.com/xxx/xx",
+		"https://XXX-XX.XXX.XXX.com/XXX/XXX",
 		"h278",    // Shared memory name
 		1024*1024, // 1MB shared memory size
 	)
